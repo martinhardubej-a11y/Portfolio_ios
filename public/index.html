@@ -245,6 +245,28 @@ function savePrepost(){
   try{ localStorage.setItem(LAST_PREPOST_KEY, JSON.stringify(lastPrepost)); }catch(e){}
 }
 
+// Denní snapshoty celkové hodnoty portfolia – z nich se kreslí graf "od teď".
+// Ukládá se jeden záznam na den (poslední hodnota dne přepíše předchozí).
+const SNAP_KEY = 'mojeportfolio-snapshots';
+let snapshots = (() => {
+  try{ return JSON.parse(localStorage.getItem(SNAP_KEY)) || []; }catch(e){ return []; }
+})();
+function recordSnapshot(){
+  const v = totals().value;
+  if (!v || !isFinite(v)) return;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const t = today.getTime();
+  const last = snapshots[snapshots.length-1];
+  if (last && last.t === t){
+    last.c = v;   // aktualizuj dnešní hodnotu
+  } else {
+    snapshots.push({t, c: v});
+  }
+  // drž max ~3 roky denních bodů
+  if (snapshots.length > 1100) snapshots = snapshots.slice(-1100);
+  try{ localStorage.setItem(SNAP_KEY, JSON.stringify(snapshots)); }catch(e){}
+}
+
 // Cena z Finnhubu (volá se přímo z prohlížeče, mimo blokovaný Netlify server).
 // Funguje pro US akcie a krypto; evropské burzy free tarif nepokrývá.
 async function fetchQuoteFinnhub(symbol){
@@ -649,6 +671,7 @@ async function refreshAll(){
   refreshing = false;
   setRefreshInfo();
   checkAlerts();
+  recordSnapshot();
   if (currentTab === 'dash' || currentTab === 'portfolio' || currentTab === 'watch') render();
 }
 
@@ -750,9 +773,11 @@ function renderDash(){
     <div class="card">
       <div class="label">Hodnota portfolia</div>
       <div class="big num">${fmtMoney(t.value, code, 0)}</div>
-      <div style="display:flex; gap:18px; margin:10px 0 12px; align-items:center">
+      <div style="display:flex; gap:18px; margin:10px 0 12px; align-items:flex-start; flex-wrap:wrap">
         <div><div class="label">Dnes</div>
           <span class="pill ${cls(t.day)} num">${fmtMoney(t.day, code, 0)} (${fmtPct(t.dayPct)})</span></div>
+        <div><div class="label">Zisk od nákupu</div>
+          <span class="pill ${cls(t.pl)} num">${fmtMoney(t.pl, code, 0)} (${fmtPct(t.plPct)})</span></div>
         <div><div class="label">Pozic</div>
           <span class="num" style="font-weight:600">${hs.length}</span></div>
       </div>
@@ -841,10 +866,37 @@ function toggleBench(k){ dashBench[k] = !dashBench[k]; renderDash(); }
 async function drawPortfolioChart(){
   const canvas = document.getElementById('portChart');
   if (!canvas) return;
-  const {portfolio, invested} = await buildPortfolioHistory(dashRange);
   const loading = document.getElementById('portLoading');
+
+  // Filtr snapshotů podle vybraného období
+  const now = Date.now();
+  const cutoff = {
+    '1mo': now - 31*86400e3, '6mo': now - 183*86400e3,
+    '1y': now - 366*86400e3, '5y': now - 1827*86400e3
+  }[dashRange] || 0;
+  const portfolio = snapshots.filter(s => s.t >= cutoff);
+
   if (loading) loading.style.display = 'none';
-  if (!portfolio.length || !document.getElementById('portChart')) return;
+  if (!document.getElementById('portChart')) return;
+
+  // Když ještě nemáme dost bodů (appka běží krátce), vysvětli to
+  if (portfolio.length < 2){
+    destroyChartById('portChart');
+    canvas.style.display = 'none';
+    let note = document.getElementById('portNote');
+    if (!note){
+      note = document.createElement('div');
+      note.id = 'portNote'; note.className = 'muted small';
+      note.style.cssText = 'text-align:center; padding:30px 10px; line-height:1.5';
+      canvas.parentElement.appendChild(note);
+    }
+    note.style.display = 'block';
+    note.innerHTML = 'Graf se začíná tvořit ode dneška.<br>Hodnota portfolia se ukládá každý den – '
+      + 'za pár dní se tu objeví křivka vývoje, za měsíc bude plnohodnotná.';
+    return;
+  }
+  canvas.style.display = '';
+  const noteEl = document.getElementById('portNote'); if (noteEl) noteEl.style.display = 'none';
 
   const code = state.settings.currency;
   const showBench = dashBench.sp || dashBench.nq;
@@ -853,17 +905,19 @@ async function drawPortfolioChart(){
 
   const datasets = [];
   if (showBench){
-    // Režim srovnání: vše v % od začátku
     datasets.push({ label:'Portfolio', data: portfolio.map(p => (p.c/base-1)*100),
       borderColor:'#3ddc97', borderWidth:2, pointRadius:0, tension:.25, yAxisID:'y' });
     const addBench = async (sym, color, label) => {
       const pts = await fetchBenchmark(sym, dashRange);
       if (!pts.length) return;
-      const b0 = pts[0].c;
+      // namapuj benchmark na dny, kdy máme snapshot
       const map = {}; pts.forEach(p => { map[new Date(p.t).toDateString()] = p.c; });
+      let b0 = null;
       const series = portfolio.map(p => {
         const v = map[new Date(p.t).toDateString()];
-        return v != null ? (v/b0-1)*100 : null;
+        if (v == null) return null;
+        if (b0 == null) b0 = v;
+        return (v/b0-1)*100;
       });
       datasets.push({ label, data: series, borderColor: color, borderWidth:1.5,
         pointRadius:0, tension:.25, borderDash:[5,3], yAxisID:'y', spanGaps:true });
@@ -938,7 +992,8 @@ function renderPortfolio(){
         <h3>${g.type}</h3>
         ${g.items.map(h => {
           const q = quotes[h.symbol];
-          const value = hValue(h);
+          const value = hValue(h), cost = hCost(h);
+          const plPct = cost ? (value-cost)/cost*100 : 0;
           const dayPct = q ? qChangePct(q) : 0;
           // u ETF (a obecně když název není jen ticker) ukaž název pod symbolem
           const showName = h.name && h.name.toUpperCase() !== h.symbol.toUpperCase();
@@ -955,6 +1010,7 @@ function renderPortfolio(){
             <div class="r">
               <div class="num" style="font-weight:600">${fmtMoney(value, code, 0)}</div>
               <span class="pill ${cls(dayPct)} num">${fmtPct(dayPct)}</span>
+              <span class="small num ${cls(plPct)}">celk. ${fmtPct(plPct)}</span>
             </div>
           </div>`;
         }).join('')}
@@ -1030,9 +1086,12 @@ async function renderDetail(){
       <div class="grid2">
         <div class="stat"><div class="label">Množství</div><div class="v num">${fmtQty(holdingQty(h))}</div></div>
         <div class="stat"><div class="label">Aktuální cena / ks</div><div class="v num">${q ? fmtMoney(q.price, q.currency) : '…'}</div></div>
+        <div class="stat"><div class="label">Prům. nákup / ks</div><div class="v num">${fmtMoney(avgCost(h), h.currency)}</div></div>
         <div class="stat"><div class="label">Hodnota</div><div class="v num">${fmtMoney(value, code, 0)}</div></div>
         <div class="stat"><div class="label">Dnes</div>
           <div class="v num ${q ? cls(qChangePct(q)) : ''}">${q ? fmtPct(qChangePct(q)) : '–'}</div></div>
+        <div class="stat"><div class="label">Zisk od nákupu</div>
+          <div class="v num ${cls(pl)}">${fmtMoney(pl, code, 0)} (${fmtPct(plPct)})</div></div>
       </div>
       ${h.currency !== code ? `<div id="fxBox" style="margin-top:10px"></div>` : ''}
     </div>
@@ -1667,7 +1726,7 @@ async function fixTypesAndNames(){
 }
 
 function exportData(){
-  const blob = new Blob([JSON.stringify({holdings:state.holdings, watchlist:state.watchlist, settings:state.settings}, null, 2)],
+  const blob = new Blob([JSON.stringify({holdings:state.holdings, watchlist:state.watchlist, settings:state.settings, snapshots}, null, 2)],
     {type:'application/json'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -1682,6 +1741,7 @@ function importData(input){
       const d = JSON.parse(reader.result);
       if (!d.holdings || !d.settings) throw 0;
       state.holdings = d.holdings; state.watchlist = d.watchlist || []; state.settings = d.settings;
+      if (Array.isArray(d.snapshots)){ snapshots = d.snapshots; localStorage.setItem(SNAP_KEY, JSON.stringify(snapshots)); }
       save(); toast('Záloha načtena ✓'); refreshAll(); render();
     }catch(e){ toast('Soubor se nepodařilo načíst'); }
   };
