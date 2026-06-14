@@ -987,15 +987,32 @@ function renderPortfolio(){
       <button class="btn primary" onclick="openSearch('holding')">＋ Přidat pozici</button>
       <button class="btn ghost" onclick="openImport()">⇪ Import z brokera</button>
     </div>
-    ${groups.map(g => `
+    ${groups.map(g => {
+      // Souhrn za celou sekci
+      const gValue = g.items.reduce((s,h) => s + hValue(h), 0);
+      const gCost  = g.items.reduce((s,h) => s + hCost(h), 0);
+      const gDay   = g.items.reduce((s,h) => s + hDayChange(h), 0);
+      const gDayPct = (gValue - gDay) ? gDay/(gValue-gDay)*100 : 0;
+      const gPl = gValue - gCost;
+      const gPlPct = gCost ? gPl/gCost*100 : 0;
+      const totalVal = totals().value;
+      const sharePct = totalVal ? gValue/totalVal*100 : 0;
+      return `
       <div class="card">
-        <h3>${g.type}</h3>
+        <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px">
+          <h3 style="margin:0">${g.type}</h3>
+          <span class="num" style="font-weight:700">${fmtMoney(gValue, code, 0)}</span>
+        </div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px; font-size:12px">
+          <span class="muted">Podíl <b class="num" style="color:var(--text)">${sharePct.toFixed(1)} %</b></span>
+          <span class="muted">Dnes <b class="num ${cls(gDay)}">${fmtPct(gDayPct)}</b></span>
+          <span class="muted">Od nákupu <b class="num ${cls(gPl)}">${fmtMoney(gPl, code, 0)} (${fmtPct(gPlPct)})</b></span>
+        </div>
         ${g.items.map(h => {
           const q = quotes[h.symbol];
           const value = hValue(h), cost = hCost(h);
           const plPct = cost ? (value-cost)/cost*100 : 0;
           const dayPct = q ? qChangePct(q) : 0;
-          // u ETF (a obecně když název není jen ticker) ukaž název pod symbolem
           const showName = h.name && h.name.toUpperCase() !== h.symbol.toUpperCase();
           return `
           <div class="row" onclick="openDetail('${h.id}')">
@@ -1014,7 +1031,8 @@ function renderPortfolio(){
             </div>
           </div>`;
         }).join('')}
-      </div>`).join('')}
+      </div>`;
+    }).join('')}
     ${groups.length ? '' : `
       <div class="empty"><span class="ico">💼</span>
         Prázdné portfolio.<br>Tlačítkem nahoře přidej akcii, ETF nebo krypto.</div>`}
@@ -1858,10 +1876,26 @@ function openTxModal(hid){
     </div>
     <label class="f">Datum</label>
     <input id="tDate" type="date" value="${new Date().toISOString().slice(0,10)}">
-    <label class="f">Množství (ks) – aktuálně držíš ${fmtQty(holdingQty(h))}</label>
-    <input id="tQty" type="text" inputmode="decimal">
+
+    <label class="f">Zadat jako</label>
+    <div class="seg" id="txMode" style="margin-bottom:10px">
+      <button class="active" data-m="qty">Počet kusů</button>
+      <button data-m="amount">Částku (${h.currency})</button>
+    </div>
+
+    <div id="txQtyWrap">
+      <label class="f">Množství (ks) – aktuálně držíš ${fmtQty(holdingQty(h))}</label>
+      <input id="tQty" type="text" inputmode="decimal">
+    </div>
+    <div id="txAmountWrap" style="display:none">
+      <label class="f">Investovaná částka (${h.currency})</label>
+      <input id="tAmount" type="text" inputmode="decimal" placeholder="např. 100">
+    </div>
+
     <label class="f">Cena za kus (${h.currency})</label>
     <input id="tPrice" type="text" inputmode="decimal" value="${q ? q.price.toFixed(4) : ''}">
+    <div id="txCalc" class="tiny muted" style="margin:-4px 0 10px"></div>
+
     <label class="f">Poplatek (volitelné)</label>
     <input id="tFee" type="text" inputmode="decimal" placeholder="0">
     <button class="btn primary" onclick="saveTx('${hid}')">Uložit</button>
@@ -1870,12 +1904,51 @@ function openTxModal(hid){
     const b = e.target.closest('button'); if (!b) return;
     document.querySelectorAll('#txKind button').forEach(x => x.classList.toggle('active', x === b));
   });
+  // přepínač kusy / částka
+  document.getElementById('txMode').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    document.querySelectorAll('#txMode button').forEach(x => x.classList.toggle('active', x === b));
+    const amountMode = b.dataset.m === 'amount';
+    document.getElementById('txQtyWrap').style.display = amountMode ? 'none' : 'block';
+    document.getElementById('txAmountWrap').style.display = amountMode ? 'block' : 'none';
+    updateTxCalc();
+  });
+  // živý přepočet částka → kusy
+  ['tAmount','tPrice'].forEach(id =>
+    document.getElementById(id).addEventListener('input', updateTxCalc));
+}
+
+function txAmountMode(){
+  const b = document.querySelector('#txMode button.active');
+  return b && b.dataset.m === 'amount';
+}
+function updateTxCalc(){
+  const el = document.getElementById('txCalc'); if (!el) return;
+  if (!txAmountMode()){ el.textContent = ''; return; }
+  const amount = pnum('tAmount'), price = pnum('tPrice');
+  if (amount && price){
+    el.textContent = `= ${fmtQty(amount/price)} ks při této ceně`;
+  } else {
+    el.textContent = 'Zadej částku a cenu, kusy se dopočítají.';
+  }
 }
 
 function saveTx(hid){
   const h = state.holdings.find(x => x.id === hid); if (!h) return;
-  const qty = pnum('tQty'), price = pnum('tPrice');
-  if (!qty || qty <= 0 || price == null){ toast('Vyplň množství a cenu'); return; }
+  const price = pnum('tPrice');
+  if (price == null || price <= 0){ toast('Vyplň cenu za kus'); return; }
+
+  // Množství: buď přímo kusy, nebo dopočet z částky
+  let qty;
+  if (txAmountMode()){
+    const amount = pnum('tAmount');
+    if (!amount || amount <= 0){ toast('Vyplň investovanou částku'); return; }
+    qty = amount / price;
+  } else {
+    qty = pnum('tQty');
+    if (!qty || qty <= 0){ toast('Vyplň množství'); return; }
+  }
+
   const kind = document.querySelector('#txKind button.active').dataset.k;
   if (kind === 'sell' && qty > holdingQty(h) + 1e-9){ toast('Nemůžeš prodat víc, než držíš'); return; }
   h.txs.push({ id:uid(), kind,
