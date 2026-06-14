@@ -1103,15 +1103,16 @@ async function renderDetail(){
       <h3>Moje pozice</h3>
       <div class="grid2">
         <div class="stat"><div class="label">Množství</div><div class="v num">${fmtQty(holdingQty(h))}</div></div>
-        <div class="stat"><div class="label">Aktuální cena / ks</div><div class="v num">${q ? fmtMoney(q.price, q.currency) : '…'}</div></div>
-        <div class="stat"><div class="label">Prům. nákup / ks</div><div class="v num">${fmtMoney(avgCost(h), h.currency)}</div></div>
+        <div class="stat"><div class="label">Aktuální cena / ks</div><div class="v num">${q ? fmtMoney(toDisplay(q.price, q.currency), code) : '…'}</div></div>
+        <div class="stat"><div class="label">Prům. nákup / ks</div><div class="v num">${fmtMoney(toDisplay(avgCost(h), h.currency), code)}</div></div>
         <div class="stat"><div class="label">Hodnota</div><div class="v num">${fmtMoney(value, code, 0)}</div></div>
         <div class="stat"><div class="label">Dnes</div>
           <div class="v num ${q ? cls(qChangePct(q)) : ''}">${q ? fmtPct(qChangePct(q)) : '–'}</div></div>
         <div class="stat"><div class="label">Zisk od nákupu</div>
           <div class="v num ${cls(pl)}">${fmtMoney(pl, code, 0)} (${fmtPct(plPct)})</div></div>
       </div>
-      ${h.currency !== code ? `<div id="fxBox" style="margin-top:10px"></div>` : ''}
+      ${q && q.currency !== code ? `<div class="tiny muted" style="margin-top:8px">Cena na burze: ${fmtMoney(q.price, q.currency)} · přepočteno kurzem do ${code}</div>` : ''}
+      <button class="btn ghost" style="margin-top:12px; font-size:14px" onclick="openBrokerSnapshot('${h.id}')">⊕ Zadat podle brokera (hodnota + zisk)</button>
     </div>
 
     <div id="earnBox"></div>
@@ -1957,10 +1958,114 @@ function saveTx(hid){
   save(); closeModal(); render(); toast('Transakce uložena ✓');
 }
 
-/* =========================================================
-   IMPORT Z BROKERA (XTB, Revolut a další – CSV/XLSX)
-========================================================= */
-let imp = null;   // {headers, rows, map, txs, fileName}
+// "Zadat podle brokera" – přepíše pozici podle aktuální hodnoty a zisku z přehledu brokera.
+// Z aktuální ceny dopočítá počet kusů, z hodnoty a zisku průměrnou nákupní cenu.
+function openBrokerSnapshot(hid){
+  const h = state.holdings.find(x => x.id === hid); if (!h) return;
+  const q = quotes[h.symbol];
+  const curBurza = q ? q.currency : h.currency;
+  openModal(`
+    <h2>${esc(h.symbol)} – zadat podle brokera</h2>
+    <p class="small muted">Opiš čísla z přehledu u svého brokera. Aplikace z nich dopočítá počet kusů
+      i průměrnou nákupní cenu, aby pozice seděla. Tím se nahradí dosavadní transakce této pozice.</p>
+
+    <label class="f">Aktuální hodnota pozice</label>
+    <div style="display:flex; gap:8px; align-items:center">
+      <input id="bsValue" type="text" inputmode="decimal" placeholder="např. 965.09" style="flex:1">
+      <select id="bsCur" style="width:auto; margin:0">
+        <option value="${curBurza}">${curBurza}</option>
+        ${curBurza !== state.settings.currency ? `<option value="${state.settings.currency}">${state.settings.currency}</option>` : ''}
+      </select>
+    </div>
+
+    <label class="f">Zisk / ztráta od nákupu</label>
+    <div class="seg" id="bsMode" style="margin-bottom:10px">
+      <button class="active" data-m="pct">V procentech</button>
+      <button data-m="abs">V penězích</button>
+    </div>
+    <div id="bsPctWrap">
+      <input id="bsPct" type="text" inputmode="decimal" placeholder="např. 15.94 nebo -7.9">
+      <div class="tiny muted" style="margin-top:4px">Záporné číslo = ztráta (např. -7.9)</div>
+    </div>
+    <div id="bsAbsWrap" style="display:none">
+      <input id="bsAbs" type="text" inputmode="decimal" placeholder="např. 132.72 nebo -87.45">
+      <div class="tiny muted" style="margin-top:4px">Ve stejné měně jako hodnota výše. Záporné = ztráta.</div>
+    </div>
+
+    <div id="bsCalc" class="tiny" style="margin:10px 0; color:var(--accent)"></div>
+    <button class="btn primary" onclick="saveBrokerSnapshot('${hid}')">Uložit pozici</button>
+  `);
+  document.getElementById('bsMode').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    document.querySelectorAll('#bsMode button').forEach(x => x.classList.toggle('active', x === b));
+    const abs = b.dataset.m === 'abs';
+    document.getElementById('bsPctWrap').style.display = abs ? 'none' : 'block';
+    document.getElementById('bsAbsWrap').style.display = abs ? 'block' : 'none';
+    updateBsCalc(hid);
+  });
+  ['bsValue','bsPct','bsAbs','bsCur'].forEach(id =>
+    document.getElementById(id).addEventListener('input', () => updateBsCalc(hid)));
+}
+
+function bsCompute(hid){
+  const h = state.holdings.find(x => x.id === hid); if (!h) return null;
+  const q = quotes[h.symbol];
+  const value = pnum('bsValue');
+  if (!value || value <= 0) return null;
+  const valCur = document.getElementById('bsCur').value;
+  const code = state.settings.currency;
+
+  // aktuální cena za kus v měně, ve které je zadaná hodnota
+  let priceInValCur;
+  if (q){
+    priceInValCur = valCur === q.currency ? q.price
+      : valCur === code ? toDisplay(q.price, q.currency)
+      : q.price;
+  } else return null;
+  if (!priceInValCur) return null;
+
+  const qty = value / priceInValCur;   // počet kusů
+
+  // zisk
+  const absMode = document.querySelector('#bsMode button.active').dataset.m === 'abs';
+  let cost;
+  if (absMode){
+    const abs = pnum('bsAbs');
+    if (abs == null) return null;
+    cost = value - abs;   // vloženo = hodnota - zisk
+  } else {
+    const pct = pnum('bsPct');
+    if (pct == null) return null;
+    cost = value / (1 + pct/100);   // vloženo z procenta zisku
+  }
+  if (cost <= 0) return null;
+  const avgPrice = cost / qty;   // průměrná nákupní cena v měně hodnoty
+
+  // ulož transakci v měně burzy (h.currency), ať to sedí se zbytkem appky
+  let avgInBurza = avgPrice;
+  if (valCur !== q.currency){
+    // přepočet z měny hodnoty do měny burzy přes kurz
+    const r = fx[valCur + q.currency];
+    if (r) avgInBurza = avgPrice * r;
+  }
+  return { qty, avgPrice, avgInBurza, valCur, value, cost };
+}
+
+function updateBsCalc(hid){
+  const el = document.getElementById('bsCalc'); if (!el) return;
+  const r = bsCompute(hid);
+  if (!r){ el.textContent = 'Zadej hodnotu a zisk…'; return; }
+  el.innerHTML = `Vyjde: <b>${fmtQty(r.qty)} ks</b> · prům. nákup <b>${fmtMoney(r.avgPrice, r.valCur)}</b> / ks`;
+}
+
+function saveBrokerSnapshot(hid){
+  const h = state.holdings.find(x => x.id === hid); if (!h) return;
+  const r = bsCompute(hid);
+  if (!r){ toast('Vyplň hodnotu a zisk'); return; }
+  // nahraď transakce jediným nákupem, který odpovídá zadanému stavu
+  h.txs = [{ id:uid(), kind:'buy', date: Date.now(), qty: r.qty, price: r.avgInBurza, fee: 0 }];
+  save(); closeModal(); render(); toast('Pozice nastavena ✓');
+}
 
 const HKEYS = {
   symbol: ['symbol','ticker','instrument'],
