@@ -468,13 +468,13 @@ function toDisplay(amount, fromCur){
   const r = fx[fromCur + target];
   return r ? amount * r : amount;
 }
-const hCurrency  = h => quotes[h.symbol]?.currency || h.currency;
+const hCurrency  = h => h.curOverride || quotes[h.symbol]?.currency || h.currency;
 const hPrice     = h => quotes[h.symbol]?.price ?? avgCost(h);
 const hValue     = h => toDisplay(hPrice(h) * holdingQty(h), hCurrency(h));
 const hCost      = h => toDisplay(avgCost(h) * holdingQty(h), h.currency);
 const hDayChange = h => {
   const q = quotes[h.symbol]; if (!q) return 0;
-  return toDisplay((q.price - q.prev) * holdingQty(h), q.currency);
+  return toDisplay((q.price - q.prev) * holdingQty(h), hCurrency(h));
 };
 const qChangePct = q => q.prev ? (q.price - q.prev)/q.prev*100 : 0;
 
@@ -1103,7 +1103,7 @@ async function renderDetail(){
       <h3>Moje pozice</h3>
       <div class="grid2">
         <div class="stat"><div class="label">Množství</div><div class="v num">${fmtQty(holdingQty(h))}</div></div>
-        <div class="stat"><div class="label">Aktuální cena / ks</div><div class="v num">${q ? fmtMoney(toDisplay(q.price, q.currency), code) : '…'}</div></div>
+        <div class="stat"><div class="label">Aktuální cena / ks</div><div class="v num">${q ? fmtMoney(toDisplay(q.price, hCurrency(h)), code) : '…'}</div></div>
         <div class="stat"><div class="label">Prům. nákup / ks</div><div class="v num">${fmtMoney(toDisplay(avgCost(h), h.currency), code)}</div></div>
         <div class="stat"><div class="label">Hodnota</div><div class="v num">${fmtMoney(value, code, 0)}</div></div>
         <div class="stat"><div class="label">Dnes</div>
@@ -1111,8 +1111,12 @@ async function renderDetail(){
         <div class="stat"><div class="label">Zisk od nákupu</div>
           <div class="v num ${cls(pl)}">${fmtMoney(pl, code, 0)} (${fmtPct(plPct)})</div></div>
       </div>
-      ${q && q.currency !== code ? `<div class="tiny muted" style="margin-top:8px">Cena na burze: ${fmtMoney(q.price, q.currency)} · přepočteno kurzem do ${code}</div>` : ''}
-      <button class="btn ghost" style="margin-top:12px; font-size:14px" onclick="openBrokerSnapshot('${h.id}')">⊕ Zadat podle brokera (hodnota + zisk)</button>
+      ${q && hCurrency(h) !== code ? `<div class="tiny muted" style="margin-top:8px">Cena na burze: ${fmtMoney(q.price, q.currency)} · přepočteno kurzem do ${code}</div>` : ''}
+      ${q && h.curOverride && h.curOverride !== q.currency ? `<div class="tiny muted" style="margin-top:8px">Cena z burzy je v ${q.currency}, pozice vedena v ${h.curOverride} (bez přepočtu kotace).</div>` : ''}
+      <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap">
+        <button class="btn ghost" style="flex:1; min-width:140px; font-size:14px" onclick="openBrokerSnapshot('${h.id}')">⊕ Zadat podle brokera</button>
+        <button class="btn ghost" style="flex:1; min-width:140px; font-size:14px" onclick="openCurrencyFix('${h.id}')">⇄ Měna pozice: ${h.currency}</button>
+      </div>
     </div>
 
     <div id="earnBox"></div>
@@ -1958,7 +1962,39 @@ function saveTx(hid){
   save(); closeModal(); render(); toast('Transakce uložena ✓');
 }
 
-// "Zadat podle brokera" – přepíše pozici podle aktuální hodnoty a zisku z přehledu brokera.
+// Změna měny pozice – řeší případy, kdy se cena z burzy přepočítává jinak než u brokera.
+// Např. ZPRV.DE kotuje v EUR, ale broker (XTB) vede pozici v USD ~1:1.
+function openCurrencyFix(hid){
+  const h = state.holdings.find(x => x.id === hid); if (!h) return;
+  const q = quotes[h.symbol];
+  const burzaCur = q ? q.currency : h.currency;
+  openModal(`
+    <h2>${esc(h.symbol)} – měna pozice</h2>
+    <p class="small muted">Cena z burzy je v <b>${burzaCur}</b>. Pokud ti broker tuhle pozici vede
+      v jiné měně (a hodnota pak nesedí), můžeš tu měnu tady srovnat. Aplikace pak cenu nebude
+      zbytečně přepočítávat.</p>
+    <label class="f">V jaké měně vést tuto pozici</label>
+    <select id="cfCur" style="margin-bottom:6px">
+      <option value="USD" ${h.currency==='USD'?'selected':''}>USD – americký dolar</option>
+      <option value="EUR" ${h.currency==='EUR'?'selected':''}>EUR – euro</option>
+      <option value="CZK" ${h.currency==='CZK'?'selected':''}>CZK – koruna</option>
+      <option value="GBP" ${h.currency==='GBP'?'selected':''}>GBP – libra</option>
+    </select>
+    <div class="tiny muted" style="margin-bottom:12px">
+      Tip: když ti broker ukazuje hodnotu v USD a sedí ti zhruba cena za kus, zvol USD.
+      Cena z burzy (${q ? fmtMoney(q.price, burzaCur) : '–'}) se pak bude brát přímo v té měně.
+    </div>
+    <button class="btn primary" onclick="saveCurrencyFix('${hid}')">Uložit</button>
+  `);
+}
+function saveCurrencyFix(hid){
+  const h = state.holdings.find(x => x.id === hid); if (!h) return;
+  const newCur = document.getElementById('cfCur').value;
+  h.currency = newCur;
+  h.curOverride = newCur;   // cena z burzy se bude interpretovat v této měně (bez přepočtu kotace)
+  save(); closeModal(); render(); toast('Měna pozice nastavena ✓');
+}
+
 // Z aktuální ceny dopočítá počet kusů, z hodnoty a zisku průměrnou nákupní cenu.
 function openBrokerSnapshot(hid){
   const h = state.holdings.find(x => x.id === hid); if (!h) return;
