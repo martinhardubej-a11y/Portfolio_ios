@@ -750,16 +750,11 @@ function renderDash(){
     <div class="card">
       <div class="label">Hodnota portfolia</div>
       <div class="big num">${fmtMoney(t.value, code, 0)}</div>
-      <div style="display:flex; gap:18px; margin:10px 0 12px">
+      <div style="display:flex; gap:18px; margin:10px 0 12px; align-items:center">
         <div><div class="label">Dnes</div>
           <span class="pill ${cls(t.day)} num">${fmtMoney(t.day, code, 0)} (${fmtPct(t.dayPct)})</span></div>
-        <div><div class="label">Celkem</div>
-          <span class="pill ${cls(t.pl)} num">${fmtMoney(t.pl, code, 0)} (${fmtPct(t.plPct)})</span></div>
-      </div>
-      <div class="grid2" style="grid-template-columns:1fr 1fr 1fr">
-        <div class="stat"><div class="label">Vloženo</div><div class="v num">${fmtMoney(t.cost, code, 0)}</div></div>
-        <div class="stat"><div class="label">Realizováno</div><div class="v num ${cls(t.realized)}">${fmtMoney(t.realized, code, 0)}</div></div>
-        <div class="stat"><div class="label">Pozic</div><div class="v num">${hs.length}</div></div>
+        <div><div class="label">Pozic</div>
+          <span class="num" style="font-weight:600">${hs.length}</span></div>
       </div>
     </div>
 
@@ -883,15 +878,13 @@ async function drawPortfolioChart(){
     grad.addColorStop(0, color+'40'); grad.addColorStop(1, color+'00');
     datasets.push({ label:'Hodnota', data: portfolio.map(p=>p.c), borderColor:color,
       backgroundColor:grad, fill:true, pointRadius:0, borderWidth:2, tension:.25, yAxisID:'y' });
-    datasets.push({ label:'Vloženo', data: invested.map(p=>p.c), borderColor:'#5b6884',
-      borderWidth:1.5, pointRadius:0, borderDash:[4,4], tension:.1, yAxisID:'y' });
   }
 
   destroyChartById('portChart');
   charts.push(new Chart(canvas, {
     type:'line', data:{labels, datasets},
     options:{ maintainAspectRatio:false, interaction:{intersect:false, mode:'index'},
-      plugins:{ legend:{display:showBench || true, labels:{color:CHART_TICK, boxWidth:12, font:{size:10}}},
+      plugins:{ legend:{display:showBench, labels:{color:CHART_TICK, boxWidth:12, font:{size:10}}},
         tooltip:{callbacks:{label: c => showBench
           ? c.dataset.label+': '+(c.parsed.y>=0?'+':'')+c.parsed.y.toFixed(1)+' %'
           : c.dataset.label+': '+fmtMoney(c.parsed.y, code, 0)}}},
@@ -945,8 +938,7 @@ function renderPortfolio(){
         <h3>${g.type}</h3>
         ${g.items.map(h => {
           const q = quotes[h.symbol];
-          const value = hValue(h), cost = hCost(h);
-          const plPct = cost ? (value-cost)/cost*100 : 0;
+          const value = hValue(h);
           const dayPct = q ? qChangePct(q) : 0;
           // u ETF (a obecně když název není jen ticker) ukaž název pod symbolem
           const showName = h.name && h.name.toUpperCase() !== h.symbol.toUpperCase();
@@ -963,7 +955,6 @@ function renderPortfolio(){
             <div class="r">
               <div class="num" style="font-weight:600">${fmtMoney(value, code, 0)}</div>
               <span class="pill ${cls(dayPct)} num">${fmtPct(dayPct)}</span>
-              <span class="small num ${cls(plPct)}">${fmtPct(plPct)}</span>
             </div>
           </div>`;
         }).join('')}
@@ -1039,14 +1030,9 @@ async function renderDetail(){
       <div class="grid2">
         <div class="stat"><div class="label">Množství</div><div class="v num">${fmtQty(holdingQty(h))}</div></div>
         <div class="stat"><div class="label">Aktuální cena / ks</div><div class="v num">${q ? fmtMoney(q.price, q.currency) : '…'}</div></div>
-        <div class="stat"><div class="label">Prům. nákup / ks</div><div class="v num">${fmtMoney(avgCost(h), h.currency)}</div></div>
-        <div class="stat"><div class="label">Zisk / ks</div><div class="v num ${cls((q?q.price:0)-avgCost(h))}">${q ? fmtMoney(q.price - avgCost(h), h.currency) : '–'}</div></div>
         <div class="stat"><div class="label">Hodnota</div><div class="v num">${fmtMoney(value, code, 0)}</div></div>
-        <div class="stat"><div class="label">Vloženo</div><div class="v num">${fmtMoney(cost, code, 0)}</div></div>
-        <div class="stat"><div class="label">Nereal. P/L</div>
-          <div class="v num ${cls(pl)}">${fmtMoney(pl, code, 0)} (${fmtPct(plPct)})</div></div>
-        <div class="stat"><div class="label">Real. P/L</div>
-          <div class="v num ${cls(real)}">${fmtMoney(real, code, 0)}</div></div>
+        <div class="stat"><div class="label">Dnes</div>
+          <div class="v num ${q ? cls(qChangePct(q)) : ''}">${q ? fmtPct(qChangePct(q)) : '–'}</div></div>
       </div>
       ${h.currency !== code ? `<div id="fxBox" style="margin-top:10px"></div>` : ''}
     </div>
