@@ -313,9 +313,47 @@ async function fetchQuote(symbol){
   const looksUS = !symbol.includes('.') || /\.US$/i.test(symbol);
   // Finnhub zkoušej jen pro US akcie (na free tarifu krypto/EU nejde spolehlivě)
   if (state.settings.finnhubKey && looksUS && !isCrypto){
-    try{ return await fetchQuoteFinnhub(symbol); }catch(e){ /* fallback na Yahoo */ }
+    try{
+      const q = await fetchQuoteFinnhub(symbol);
+      // Finnhub nedává pre/post – dotáhni je z Yahoo, ale jen když pre/post vůbec dává smysl
+      // (mimo běžné obchodní hodiny US burzy 15:30–22:00 SEČ/SELČ), ať šetříme Yahoo volání.
+      if (isPrePostTime()){
+        try{
+          const yj = await yahoo({endpoint:'chart', symbol, range:'1d', interval:'5m', prepost:'1'});
+          const m = yj?.chart?.result?.[0]?.meta;
+          if (m){
+            q.state = m.marketState || null;
+            q.pre  = m.preMarketPrice  ?? null;
+            q.post = m.postMarketPrice ?? null;
+            if (q.pre != null && q.state === 'PRE'){
+              lastPrepost[symbol] = {kind:'pre', price:q.pre, ref:q.price, currency:q.currency, at:Date.now()};
+              savePrepost();
+            } else if (q.post != null && (q.state === 'POST' || q.state === 'POSTPOST' || q.state === 'CLOSED')){
+              lastPrepost[symbol] = {kind:'post', price:q.post, ref:q.price, currency:q.currency, at:Date.now()};
+              savePrepost();
+            }
+          }
+        }catch(e){ /* pre/post se nepovedlo – nevadí, cena z Finnhubu platí */ }
+      }
+      return q;
+    }catch(e){ /* fallback na Yahoo */ }
   }
   return await fetchQuoteYahoo(symbol);
+}
+
+// Je teď doba, kdy má smysl dotahovat předburzovní/poburzovní ceny US akcií?
+// US pre-market ~10:00–15:30 SELČ, post-market ~22:00–02:00 SELČ. V obchodních
+// hodinách (15:30–22:00) ani v noci pre/post nepotřebujeme.
+function isPrePostTime(){
+  const now = new Date();
+  // čas v New Yorku – pre-market 4:00–9:30, after-hours 16:00–20:00 (ET)
+  const et = new Date(now.toLocaleString('en-US', {timeZone:'America/New_York'}));
+  const h = et.getHours() + et.getMinutes()/60;
+  const day = et.getDay(); // 0=ne, 6=so
+  if (day === 0 || day === 6) return false;       // víkend
+  const preMarket  = h >= 4 && h < 9.5;
+  const afterHours = h >= 16 && h < 20;
+  return preMarket || afterHours;
 }
 
 // Detailní fundamenty (P/E, 52t rozpětí, doporučení, earnings termín)
