@@ -218,7 +218,7 @@ const fmtMoney = (v, code, digits) => {
       style:'currency', currency:code,
       maximumFractionDigits: digits ?? (Math.abs(v) >= 1 ? 2 : 4),
       minimumFractionDigits: 0
-    }).format(v);
+    }).format(v).replace('US$', '$');
   }catch(e){ return v.toFixed(2) + ' ' + code; }
 };
 const fmtPct = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '\u00a0%';
@@ -433,6 +433,51 @@ async function fetchHistory(symbol, rangeKey){
   return {points, dividends};
 }
 
+// Mini grafy (sparkline) u pozic – data za 1 den, kreslená jako malé SVG.
+const sparkCache = {};   // symbol -> [ceny] (jen hodnoty close za dnešek)
+async function loadSparklines(){
+  const syms = activeHoldings().map(h => h.symbol);
+  // stáhni po dávkách 3 s odstupem 700 ms – šetrné k Yahoo
+  for (let i = 0; i < syms.length; i += 3){
+    const batch = syms.slice(i, i+3);
+    await Promise.allSettled(batch.map(async sym => {
+      try{
+        const {points} = await fetchHistory(sym, '1d');
+        if (points && points.length > 1) sparkCache[sym] = points.map(p => p.c);
+      }catch(e){ /* jeden graf chybí – nevadí */ }
+    }));
+    if (i + 3 < syms.length) await new Promise(r => setTimeout(r, 700));
+  }
+  // překresli portfolio, ať se grafy objeví
+  if (currentTab === 'portfolio') render();
+}
+
+function sparklineSVG(symbol, up){
+  const data = sparkCache[symbol];
+  if (!data || data.length < 2) return '';   // ještě nemáme data
+  const w = 64, h = 28, pad = 2;
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = (max - min) || 1;
+  const stepX = (w - pad*2) / (data.length - 1);
+  const pts = data.map((v, i) => {
+    const x = pad + i*stepX;
+    const y = pad + (h - pad*2) * (1 - (v - min)/range);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const color = up ? '#3ddc97' : '#ff6b6b';
+  // plocha pod čarou
+  const area = `${pad},${h-pad} ${pts} ${(w-pad).toFixed(1)},${h-pad}`;
+  const gid = 'sg' + symbol.replace(/[^a-z0-9]/gi,'');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="flex-shrink:0">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${color}" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+    <polygon points="${area}" fill="url(#${gid})"/>
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"
+      stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
+}
+
 async function fetchSearch(q){
   const j = await yahoo({endpoint:'search', q});
   return (j?.quotes || [])
@@ -562,9 +607,11 @@ const LOGO_DOMAINS = {
   ABNB:'airbnb.com', SHOP:'shopify.com', SQ:'block.xyz', PLTR:'palantir.com',
   SNOW:'snowflake.com', COIN:'coinbase.com', T:'att.com', VZ:'verizon.com',
   CSCO:'cisco.com', QCOM:'qualcomm.com', TXN:'ti.com', AVGO:'broadcom.com',
-  // ETF (loga správců)
-  VWCE:'vanguard.com', VUAA:'vanguard.com', VUSA:'vanguard.com', VWRL:'vanguard.com',
-  CSPX:'ishares.com', IWDA:'ishares.com', EUNL:'ishares.com', SXR8:'ishares.com',
+  LYFT:'lyft.com', LTM:'latamairlines.com', CRWV:'coreweave.com', LLY:'lilly.com',
+  ASML:'asml.com', TMO:'thermofisher.com', ELF:'elfcosmetics.com', RDDT:'redditinc.com',
+  FIG:'figma.com', XPEV:'xiaopeng.com', CARS:'cars.com', ALK:'alaskaair.com',
+  UAL:'united.com', DAL:'delta.com', CCL:'carnival.com', OXY:'oxy.com',
+  MRO:'marathonoil.com', HAL:'halliburton.com', UAA:'underarmour.com',
   // Krypto
   BTC:'bitcoin.org', ETH:'ethereum.org', SOL:'solana.com', ADA:'cardano.org',
   XRP:'ripple.com', DOGE:'dogecoin.com', DOT:'polkadot.network', LTC:'litecoin.org'
@@ -574,6 +621,8 @@ function logoBase(h){ return (h.symbol || '').split('.')[0].split('-')[0].toUppe
 
 // Vrátí seřazený seznam URL ke zkoušení (postupně přes onerror)
 function logoCandidates(h){
+  // ETF: loga správců (iShares, Vanguard…) jsou matoucí „směska", radši neutrální monogram
+  if (h.type === 'ETF') return [];
   const base = logoBase(h);
   const domain = LOGO_DOMAINS[base];
   const list = [];
@@ -711,6 +760,8 @@ async function refreshAll(){
   checkAlerts();
   recordSnapshot();
   if (currentTab === 'dash' || currentTab === 'portfolio' || currentTab === 'watch') render();
+  // mini grafy u pozic dotáhni na pozadí (neblokuje zobrazení)
+  loadSparklines();
 }
 
 async function refreshDividends(){
@@ -1059,13 +1110,16 @@ function renderPortfolio(){
               <div class="l">
                 <div class="sym">${esc(h.symbol)}</div>
                 ${showName ? `<div class="name">${esc(h.name)}</div>` : ''}
-                <div class="name num">${fmtQty(holdingQty(h))} ks · nyní ${q ? fmtMoney(q.price, q.currency) : '…'}</div>
+                <div class="name num">${fmtQty(holdingQty(h))} ks · ${q ? fmtMoney(q.price, q.currency) : '…'}</div>
               </div>
             </div>
+            ${sparklineSVG(h.symbol, dayPct >= 0)}
             <div class="r">
               <div class="num" style="font-weight:600">${fmtMoney(value, code, 0)}</div>
-              <span class="pill ${cls(dayPct)} num">${fmtPct(dayPct)}</span>
-              <span class="small num ${cls(plPct)}">celk. ${fmtPct(plPct)}</span>
+              <div style="display:flex; gap:6px; align-items:center; justify-content:flex-end; margin-top:2px">
+                <span class="pill ${cls(dayPct)} num" style="font-size:11px; padding:2px 6px">${fmtPct(dayPct)}</span>
+                <span class="num ${cls(plPct)}" style="font-size:11px">${fmtPct(plPct)}</span>
+              </div>
             </div>
           </div>`;
         }).join('')}
@@ -1080,10 +1134,10 @@ function renderPortfolio(){
 /* =========================================================
    DETAIL AKTIVA
 ========================================================= */
-let detailRange = '6mo';
+let detailRange = '1d';
 let detailCache = {};   // {points, dividends} pro aktuální symbol+range
 
-function openDetail(id){ detailId = id; detailRange = '6mo'; detailCache = {}; render(); window.scrollTo(0,0); }
+function openDetail(id){ detailId = id; detailRange = '1d'; detailCache = {}; render(); window.scrollTo(0,0); }
 function closeDetail(){ detailId = null; render(); }
 function openDividends(){ detailId = 'DIVIDENDS'; render(); window.scrollTo(0,0); }
 
