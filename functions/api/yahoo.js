@@ -20,8 +20,21 @@ export async function onRequest(context) {
       },
     });
 
-  const fetchUpstream = (u) =>
-    fetch(u, { headers: { "User-Agent": UA }, cf: { cacheTtl: 15 } });
+  const fetchUpstream = (u, extraHeaders) =>
+    fetch(u, { headers: { "User-Agent": UA, ...(extraHeaders||{}) }, cf: { cacheTtl: 15 } });
+
+  // Získá cookie + crumb potřebné pro v7/quote endpoint. Výsledek se krátce cachuje.
+  async function getCrumb() {
+    // cookie
+    const c = await fetch("https://fc.yahoo.com", { headers: { "User-Agent": UA } });
+    const cookie = c.headers.get("set-cookie") || "";
+    // crumb
+    const cr = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+      headers: { "User-Agent": UA, "Cookie": cookie },
+    });
+    const crumb = await cr.text();
+    return { cookie, crumb };
+  }
 
   try {
     if (p.endpoint === "chart" && p.symbol) {
@@ -33,6 +46,20 @@ export async function onRequest(context) {
       const res = await fetchUpstream(target);
       const body = await res.text();
       return respond(res.status, body);
+    }
+
+    // quote – vrací pre/post cenu (preMarketPrice / postMarketPrice) jako web Yahoo.
+    // Vyžaduje cookie+crumb. Používá se jen pro pre/post, ne pro hlavní ceny.
+    if (p.endpoint === "quote" && p.symbol) {
+      try {
+        const { cookie, crumb } = await getCrumb();
+        const target = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(p.symbol)}&crumb=${encodeURIComponent(crumb)}`;
+        const res = await fetchUpstream(target, { Cookie: cookie });
+        const body = await res.text();
+        return respond(res.status, body);
+      } catch (e) {
+        return respond(502, JSON.stringify({ error: "quote selhalo", detail: String(e) }));
+      }
     }
 
     if (p.endpoint === "search" && p.q) {
