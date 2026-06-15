@@ -455,8 +455,17 @@ async function loadSparklines(){
 function sparklineSVG(symbol, up){
   const data = sparkCache[symbol];
   if (!data || data.length < 2) return '';   // ještě nemáme data
-  const w = 64, h = 28, pad = 2;
-  const min = Math.min(...data), max = Math.max(...data);
+  const w = 64, h = 28, pad = 3;
+  const first = data[0];
+  let min = Math.min(...data), max = Math.max(...data);
+  // Minimální rozsah ±1,5 % kolem výchozí ceny – aby běžný ~1% pohyb byl čitelný jako
+  // trend, ale úplně klidný den nevypadal jako dramatický propad/skok.
+  const minSpan = Math.abs(first) * 0.01;   // 1 % celkové rozpětí (±0,5 %)
+  if ((max - min) < minSpan){
+    const mid = (max + min) / 2;
+    min = mid - minSpan/2;
+    max = mid + minSpan/2;
+  }
   const range = (max - min) || 1;
   const stepX = (w - pad*2) / (data.length - 1);
   const pts = data.map((v, i) => {
@@ -465,7 +474,6 @@ function sparklineSVG(symbol, up){
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
   const color = up ? '#3ddc97' : '#ff6b6b';
-  // plocha pod čarou
   const area = `${pad},${h-pad} ${pts} ${(w-pad).toFixed(1)},${h-pad}`;
   const gid = 'sg' + symbol.replace(/[^a-z0-9]/gi,'');
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="flex-shrink:0">
@@ -642,6 +650,7 @@ function monogram(h){
 }
 
 function logoHTML(h){
+  if (h.type === 'ETF') return '';   // ETF: bez loga i monogramu, text se posune doleva
   const cands = logoCandidates(h);
   const mono = monogram(h);
   if (!cands.length) return `<span class="logowrap">${mono.replace('display:none', 'display:flex')}</span>`;
@@ -1185,6 +1194,7 @@ async function renderDetail(){
         ${RANGES.map(r => `<button class="${r.key===detailRange?'active':''}"
           onclick="setRange('${r.key}')">${r.label}</button>`).join('')}
       </div>
+      <div style="text-align:right; margin:8px 2px 0"><span id="chartPct" class="num"></span></div>
       <div class="chartwrap"><canvas id="priceChart"></canvas></div>
       <div id="earnMarkers" class="tiny muted" style="margin-top:6px"></div>
     </div>
@@ -1251,8 +1261,24 @@ async function drawPriceChart(h){
   const pts = detailCache.points || [];
   if (!pts.length || !document.getElementById('priceChart')) return;
 
-  const isUp = pts[pts.length-1].c >= pts[0].c;
+  const q = quotes[h.symbol];
+  // Změna za zobrazené období: u 1D bereme denní změnu (proti včerejšku, ať ladí s "dnes"),
+  // u delších období změnu mezi prvním a posledním bodem grafu.
+  let periodPct;
+  if (detailRange === '1d' && q && q.prev){
+    periodPct = (q.price - q.prev) / q.prev * 100;
+  } else {
+    periodPct = pts.length > 1 ? (pts[pts.length-1].c - pts[0].c) / pts[0].c * 100 : 0;
+  }
+  const isUp = periodPct >= 0;
   const color = isUp ? '#3ddc97' : '#ff6b6b';
+  // popisek období pro zobrazení procenta
+  const rangeLabel = {'1d':'dnes','1mo':'za měsíc','6mo':'za 6 měsíců','1y':'za rok','5y':'za 5 let'}[detailRange] || '';
+  const chartPctEl = document.getElementById('chartPct');
+  if (chartPctEl){
+    chartPctEl.className = 'num ' + (isUp ? 'up' : 'down');
+    chartPctEl.textContent = `${isUp?'+':''}${periodPct.toFixed(2)} % ${rangeLabel}`;
+  }
   const labels = pts.map(p => {
     const d = new Date(p.t);
     return detailRange === '1d'
