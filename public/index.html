@@ -315,16 +315,16 @@ async function fetchQuote(symbol){
   if (state.settings.finnhubKey && looksUS && !isCrypto){
     try{
       const q = await fetchQuoteFinnhub(symbol);
-      // Finnhub nedává pre/post – dotáhni je z Yahoo, ale jen když pre/post vůbec dává smysl
-      // (mimo běžné obchodní hodiny US burzy 15:30–22:00 SEČ/SELČ), ať šetříme Yahoo volání.
+      // Finnhub nedává pre/post – dotáhni je z Yahoo quote endpointu (jako web Yahoo),
+      // ale jen v pre/post hodinách, ať šetříme volání.
       if (isPrePostTime()){
         try{
-          const yj = await yahoo({endpoint:'chart', symbol, range:'1d', interval:'5m', prepost:'1'});
-          const m = yj?.chart?.result?.[0]?.meta;
-          if (m){
-            q.state = m.marketState || null;
-            q.pre  = m.preMarketPrice  ?? null;
-            q.post = m.postMarketPrice ?? null;
+          const yj = await yahoo({endpoint:'quote', symbol});
+          const r = yj?.quoteResponse?.result?.[0];
+          if (r){
+            q.state = r.marketState || null;
+            q.pre  = r.preMarketPrice  ?? null;
+            q.post = r.postMarketPrice ?? null;
             if (q.pre != null && q.state === 'PRE'){
               lastPrepost[symbol] = {kind:'pre', price:q.pre, ref:q.price, currency:q.currency, at:Date.now()};
               savePrepost();
