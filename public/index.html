@@ -1009,14 +1009,20 @@ async function drawPortfolioChart(){
     const addBench = async (sym, color, label) => {
       let pts = await fetchBenchmark(sym, dashRange);
       if (!pts || !pts.length) return;
-      // ořízni benchmark na časové okno portfolia (od prvního snapshotu dál)
-      let win = pts.filter(p => p.t >= t0 - 2*86400e3 && p.t <= t1 + 86400e3);
-      if (win.length < 2) win = pts;   // kdyby okno bylo moc úzké, vezmi celé
-      const b0 = win[0].c;
-      // namapuj každý snapshot portfolia na nejbližší benchmark bod v čase
+      pts = pts.slice().sort((a,b) => a.t - b.t);
+      // Nula benchmarku = jeho hodnota v čase startu tvého grafu (první snapshot),
+      // ne na začátku celého staženého období. Vezmi nejbližší bod k t0.
+      let b0 = null, b0dt = Infinity;
+      for (const bp of pts){
+        const dt = Math.abs(bp.t - t0);
+        if (dt < b0dt){ b0dt = dt; b0 = bp.c; }
+      }
+      if (!b0) return;
+      // pro každý snapshot portfolia najdi nejbližší benchmark bod a spočti % od b0
       const series = portfolio.map(p => {
         let best = null, bestDt = Infinity;
-        for (const bp of win){
+        for (const bp of pts){
+          if (bp.t > t1 + 2*86400e3) break;
           const dt = Math.abs(bp.t - p.t);
           if (dt < bestDt){ bestDt = dt; best = bp; }
         }
