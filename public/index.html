@@ -1005,17 +1005,22 @@ async function drawPortfolioChart(){
   if (showBench){
     datasets.push({ label:'Portfolio', data: portfolio.map(p => (p.c/base-1)*100),
       borderColor:'#3ddc97', borderWidth:2, pointRadius:0, tension:.25, yAxisID:'y' });
+    const t0 = portfolio[0].t, t1 = portfolio[portfolio.length-1].t;
     const addBench = async (sym, color, label) => {
-      const pts = await fetchBenchmark(sym, dashRange);
-      if (!pts.length) return;
-      // namapuj benchmark na dny, kdy máme snapshot
-      const map = {}; pts.forEach(p => { map[new Date(p.t).toDateString()] = p.c; });
-      let b0 = null;
+      let pts = await fetchBenchmark(sym, dashRange);
+      if (!pts || !pts.length) return;
+      // ořízni benchmark na časové okno portfolia (od prvního snapshotu dál)
+      let win = pts.filter(p => p.t >= t0 - 2*86400e3 && p.t <= t1 + 86400e3);
+      if (win.length < 2) win = pts;   // kdyby okno bylo moc úzké, vezmi celé
+      const b0 = win[0].c;
+      // namapuj každý snapshot portfolia na nejbližší benchmark bod v čase
       const series = portfolio.map(p => {
-        const v = map[new Date(p.t).toDateString()];
-        if (v == null) return null;
-        if (b0 == null) b0 = v;
-        return (v/b0-1)*100;
+        let best = null, bestDt = Infinity;
+        for (const bp of win){
+          const dt = Math.abs(bp.t - p.t);
+          if (dt < bestDt){ bestDt = dt; best = bp; }
+        }
+        return best ? (best.c/b0 - 1)*100 : null;
       });
       datasets.push({ label, data: series, borderColor: color, borderWidth:1.5,
         pointRadius:0, tension:.25, borderDash:[5,3], yAxisID:'y', spanGaps:true });
