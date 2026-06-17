@@ -895,7 +895,6 @@ function renderDash(){
         <button class="bench-bar bnq ${dashBench.nq ? 'on':''}" onclick="toggleBench('nq')">vs Nasdaq 100</button>
         <span class="tiny muted" style="align-self:center">srovnání v % od začátku období</span>
       </div>
-      <div id="benchDiag" class="tiny muted" style="margin-top:8px; white-space:pre-wrap; font-family:monospace"></div>
     </div>` : ''}
 
     ${bySymbol.length ? `
@@ -1007,7 +1006,6 @@ async function drawPortfolioChart(){
     datasets.push({ label:'Portfolio', data: portfolio.map(p => (p.c/base-1)*100),
       borderColor:'#3ddc97', borderWidth:2, pointRadius:0, tension:.25, yAxisID:'y' });
     const t0 = portfolio[0].t, t1 = portfolio[portfolio.length-1].t;
-    const diagEl = document.getElementById('benchDiag'); if (diagEl) diagEl.textContent = '';
     const addBench = async (sym, color, label) => {
       let pts = await fetchBenchmark(sym, dashRange);
       if (!pts || !pts.length) return;
@@ -1031,15 +1029,6 @@ async function drawPortfolioChart(){
       const b0 = priceAt(t0);   // hodnota indexu v čase startu tvého grafu = nula
       if (!b0) return;
       const series = portfolio.map(p => (priceAt(p.t)/b0 - 1) * 100);
-      // DIAGNOSTIKA na obrazovku
-      const diag = document.getElementById('benchDiag');
-      if (diag){
-        const f = t => new Date(t).toLocaleDateString('cs-CZ',{day:'numeric',month:'numeric'}) + ' ' + new Date(t).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'});
-        diag.textContent += `${label}: ${pts.length} bodů indexu, `
-          + `první ${f(pts[0].t)}, poslední ${f(pts[pts.length-1].t)}\n`
-          + `  portfolio: ${portfolio.length} snapshotů, první ${f(t0)}, poslední ${f(t1)}\n`
-          + `  série: ${series.map(v=>v.toFixed(2)).join(', ')}\n`;
-      }
       datasets.push({ label, data: series, borderColor: color, borderWidth:1.5,
         pointRadius:0, tension:.25, borderDash:[5,3], yAxisID:'y', spanGaps:true });
     };
