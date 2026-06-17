@@ -251,8 +251,19 @@ const SNAP_KEY = 'mojeportfolio-snapshots';
 let snapshots = (() => {
   try{ return JSON.parse(localStorage.getItem(SNAP_KEY)) || []; }catch(e){ return []; }
 })();
+// Převod částky do USD (pevná měna pro snapshoty, nezávislá na zvoleném zobrazení)
+function toUSD(amount, fromCur){
+  if (fromCur === 'USD') return amount;
+  const r = fx[fromCur + 'USD'];
+  return r ? amount * r : amount;
+}
+// Hodnota celého portfolia v USD (pro konzistentní snapshoty bez ohledu na zvolenou měnu)
+function portfolioValueUSD(){
+  return state.holdings.reduce((s,h) => s + toUSD(hPrice(h) * holdingQty(h), hCurrency(h)), 0);
+}
+
 function recordSnapshot(){
-  const v = totals().value;
+  const v = portfolioValueUSD();   // VŽDY v USD, ať přepnutí měny graf nerozhodí
   if (!v || !isFinite(v)) return;
   const today = new Date(); today.setHours(0,0,0,0);
   const t = today.getTime();
@@ -998,12 +1009,15 @@ async function drawPortfolioChart(){
 
   const code = state.settings.currency;
   const showBench = dashBench.sp || dashBench.nq;
-  const base = portfolio[0].c;
+  // snapshoty jsou uložené v USD – převeď na zobrazenou měnu (u % grafu to nevadí, poměr je stejný)
+  const rate = code === 'USD' ? 1 : (fx['USD'+code] || 1);
+  const portValues = portfolio.map(p => p.c * rate);
+  const base = portValues[0];
   const labels = portfolio.map(p => new Date(p.t).toLocaleDateString('cs-CZ', {day:'numeric',month:'numeric',year:'2-digit'}));
 
   const datasets = [];
   if (showBench){
-    datasets.push({ label:'Portfolio', data: portfolio.map(p => (p.c/base-1)*100),
+    datasets.push({ label:'Portfolio', data: portValues.map(v => (v/base-1)*100),
       borderColor:'#3ddc97', borderWidth:2, pointRadius:0, tension:.25, yAxisID:'y' });
     const t0 = portfolio[0].t, t1 = portfolio[portfolio.length-1].t;
     const addBench = async (sym, color, label) => {
@@ -1035,12 +1049,12 @@ async function drawPortfolioChart(){
     if (dashBench.sp) await addBench('^GSPC', '#f5b941', 'S&P 500');
     if (dashBench.nq) await addBench('^NDX', '#c77dff', 'Nasdaq 100');
   } else {
-    const isUp = portfolio[portfolio.length-1].c >= base;
+    const isUp = portValues[portValues.length-1] >= base;
     const color = isUp ? '#3ddc97' : '#ff6b6b';
     const ctx = canvas.getContext('2d');
     const grad = ctx.createLinearGradient(0,0,0,220);
     grad.addColorStop(0, color+'40'); grad.addColorStop(1, color+'00');
-    datasets.push({ label:'Hodnota', data: portfolio.map(p=>p.c), borderColor:color,
+    datasets.push({ label:'Hodnota', data: portValues, borderColor:color,
       backgroundColor:grad, fill:true, pointRadius:0, borderWidth:2, tension:.25, yAxisID:'y' });
   }
 
@@ -1811,6 +1825,8 @@ function renderSettings(){
       <h3>Údržba portfolia</h3>
       <button class="btn ghost" onclick="fixTypesAndNames()" style="margin-bottom:8px">Opravit typy a názvy (ETF, krypto)</button>
       <div class="tiny muted">Projde tvé pozice a podle známých ETF (CSPX → S&P 500, CNDX → Nasdaq 100…) opraví zařazení a doplní lidské názvy. Použij po importu, když ti vše spadlo do „Akcie".</div>
+      <button class="btn ghost" onclick="resetSnapshots()" style="margin:14px 0 8px">Vynulovat graf vývoje portfolia</button>
+      <div class="tiny muted">Smaže uložené denní body grafu „Vývoj portfolia" a začne je sbírat znovu. Použij, když graf ukazuje nesmyslné hodnoty (např. po přepínání měn). Tvé pozice ani transakce to nijak neovlivní.</div>
     </div>
 
     <div class="card">
@@ -1876,6 +1892,15 @@ async function fixTypesAndNames(){
   }
   save(); render();
   toast(changed ? `Opraveno ${changed} údajů ✓` : 'Vše už je v pořádku');
+}
+
+function resetSnapshots(){
+  if (!confirm('Vynulovat graf vývoje portfolia? Smažou se uložené denní body a graf se začne tvořit znovu. Pozice a transakce zůstanou beze změny.')) return;
+  snapshots = [];
+  try{ localStorage.removeItem(SNAP_KEY); }catch(e){}
+  recordSnapshot();   // rovnou ulož dnešní bod v USD
+  render();
+  toast('Graf vývoje vynulován ✓');
 }
 
 function exportData(){
