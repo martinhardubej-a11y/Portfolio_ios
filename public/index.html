@@ -895,6 +895,7 @@ function renderDash(){
         <button class="bench-bar bnq ${dashBench.nq ? 'on':''}" onclick="toggleBench('nq')">vs Nasdaq 100</button>
         <span class="tiny muted" style="align-self:center">srovnání v % od začátku období</span>
       </div>
+      <div id="benchDiag" class="tiny muted" style="margin-top:8px; white-space:pre-wrap; font-family:monospace"></div>
     </div>` : ''}
 
     ${bySymbol.length ? `
@@ -1006,28 +1007,39 @@ async function drawPortfolioChart(){
     datasets.push({ label:'Portfolio', data: portfolio.map(p => (p.c/base-1)*100),
       borderColor:'#3ddc97', borderWidth:2, pointRadius:0, tension:.25, yAxisID:'y' });
     const t0 = portfolio[0].t, t1 = portfolio[portfolio.length-1].t;
+    const diagEl = document.getElementById('benchDiag'); if (diagEl) diagEl.textContent = '';
     const addBench = async (sym, color, label) => {
       let pts = await fetchBenchmark(sym, dashRange);
       if (!pts || !pts.length) return;
       pts = pts.slice().sort((a,b) => a.t - b.t);
-      // Nula benchmarku = jeho hodnota v čase startu tvého grafu (první snapshot),
-      // ne na začátku celého staženého období. Vezmi nejbližší bod k t0.
-      let b0 = null, b0dt = Infinity;
-      for (const bp of pts){
-        const dt = Math.abs(bp.t - t0);
-        if (dt < b0dt){ b0dt = dt; b0 = bp.c; }
-      }
-      if (!b0) return;
-      // pro každý snapshot portfolia najdi nejbližší benchmark bod a spočti % od b0
-      const series = portfolio.map(p => {
-        let best = null, bestDt = Infinity;
-        for (const bp of pts){
-          if (bp.t > t1 + 2*86400e3) break;
-          const dt = Math.abs(bp.t - p.t);
-          if (dt < bestDt){ bestDt = dt; best = bp; }
+
+      // Lineární interpolace ceny indexu v libovolném čase t (mezi známými body).
+      // Robustní vůči tomu, že benchmark má denní body a snapshoty mají jiné časy.
+      const priceAt = (t) => {
+        if (t <= pts[0].t) return pts[0].c;
+        if (t >= pts[pts.length-1].t) return pts[pts.length-1].c;
+        for (let i = 1; i < pts.length; i++){
+          if (pts[i].t >= t){
+            const a = pts[i-1], b = pts[i];
+            const f = (t - a.t) / (b.t - a.t || 1);
+            return a.c + (b.c - a.c) * f;
+          }
         }
-        return best ? (best.c/b0 - 1)*100 : null;
-      });
+        return pts[pts.length-1].c;
+      };
+
+      const b0 = priceAt(t0);   // hodnota indexu v čase startu tvého grafu = nula
+      if (!b0) return;
+      const series = portfolio.map(p => (priceAt(p.t)/b0 - 1) * 100);
+      // DIAGNOSTIKA na obrazovku
+      const diag = document.getElementById('benchDiag');
+      if (diag){
+        const f = t => new Date(t).toLocaleDateString('cs-CZ',{day:'numeric',month:'numeric'}) + ' ' + new Date(t).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'});
+        diag.textContent += `${label}: ${pts.length} bodů indexu, `
+          + `první ${f(pts[0].t)}, poslední ${f(pts[pts.length-1].t)}\n`
+          + `  portfolio: ${portfolio.length} snapshotů, první ${f(t0)}, poslední ${f(t1)}\n`
+          + `  série: ${series.map(v=>v.toFixed(2)).join(', ')}\n`;
+      }
       datasets.push({ label, data: series, borderColor: color, borderWidth:1.5,
         pointRadius:0, tension:.25, borderDash:[5,3], yAxisID:'y', spanGaps:true });
     };
